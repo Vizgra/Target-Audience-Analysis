@@ -1,0 +1,296 @@
+import requests
+import json
+import pandas as pd
+from datetime import datetime
+import re
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+from nltk.corpus import stopwords
+import nltk
+from collections import Counter
+
+#Парсинг естественной информации со стены группы-концентратора потенциальных потребителей
+
+inf_0 = requests.get('https://api.vk.com/method/wall.get', params = {'access_token' : '315c5932c4e6fe94cced7009dac83e5e9864fcb750264796470ce526863eb0fa164bab54b3ff767a68cf1', 'v' : 5.82, 'domain' : 'joise', 'count' : 1})
+
+posts_count = int(inf_0.json()['response']['count'])
+offset = 0
+all_posts_inf = []
+while offset < 5000:
+    inf_0 = requests.get('https://api.vk.com/method/wall.get', params = {'access_token' : '315c5932c4e6fe94cced7009dac83e5e9864fcb750264796470ce526863eb0fa164bab54b3ff767a68cf1',
+                                                                         'v' : 5.82,
+                                                                         'domain' : 'joise',
+                                                                         'count' : 100,
+                                                                         'offset' : offset
+                                                                        }
+                        )
+    inf_1 = inf_0.json()['response']['items']
+    all_posts_inf.extend(inf_1)
+    offset += 100
+date_list = []
+text_list = []
+
+for post in all_posts_inf:
+    for k,v in post.items():
+        if k == 'date':
+            date_list.append(datetime.utcfromtimestamp(v).strftime('%d.%m.%Y'))
+        if k == 'text':
+            if v == '':
+                text_list.append('-')
+            else:
+                text_list.append(v)
+
+col_names = ['Дата', 'Текст поста']
+wall_inf_df = pd.DataFrame([date_list, text_list])
+wall_inf_df = wall_inf_df.T
+wall_inf_df.columns = col_names
+
+#Токеннизация извлеченной естественной информации: (1) удаление знаков перпинаниая и приведение к единому регистру - (2) первичная (грубая) токенизация - (3) лемматизация токенов - (3.1 - вариативный) стеминг токенов - (4) исключение стоп-слов
+noun = ['S-PRO', 'NUM=n', 'S', 'NONLEX']
+verb = ['V']
+adj = ['ANUM=pl', 'ANUM=n', 'ANUM=m', 'NUM=comp', 'A=comp2', 'A=m', 'A-PRO=f', 'A-PRO=pl', 'A-PRO', 'A=comp', 'A=sg', 'ADV=comp', 'A', 'A=pl', 'A=f', 'PRAEDIC=comp', 'A=n', 'A-PRO=n', 'ANUM=f', 'ADV', 'NUM=f', 'NUM=m']
+rec = ['A-PRO=m', 'NUM=acc', 'NUM=ciph', 'NUM=ins', 'NUM', 'NUM=gen', 'S-PRO=dat', 'PR', 'INTJ', 'NUM=nom', 'ADV=comp2', 'S-PRO=ins', 'ADV-PRO', 'S-PRO=acc', 'PARENTH', 'PRAEDIC', 'PART', 'CONJ']
+
+lemmatizer = WordNetLemmatizer()
+stop_words = stopwords.words('russian')
+text_tokens_list = []
+
+for text in text_list:
+    if text != '-':
+        text_1 = re.sub(r'[^\w\s\d]', '', text)
+        text_2 = re.sub(r'\n', '', text_1)
+        if text != '-':
+            text_2_tokens = word_tokenize(text_2.lower())
+            text_2_tokens_pos = nltk.pos_tag(text_2_tokens, lang = 'rus')
+            #word, pos_tags = zip(*text_2_tokens_pos)
+            text_2_tokens_pos_dict = dict(zip(text_2_tokens, list(pos_tags)))
+            text_3_tokens = []
+            for k,v in text_2_tokens_pos_dict.items():
+                if v in noun:
+                    lem_token = lemmatizer.lemmatize(k, pos = 'n')
+                    text_3_tokens.append(lem_token)
+                elif v in verb:
+                    lem_token = lemmatizer.lemmatize(k, pos = 'v')
+                    text_3_tokens.append(lem_token)  
+                elif v in adj:
+                    lem_token = lemmatizer.lemmatize(k, pos = 'a')
+                    text_3_tokens.append(lem_token)
+                elif v in rec:
+                    lem_token = lemmatizer.lemmatize(k, pos = 'r')
+                    text_3_tokens.append(lem_token)
+            text_4_tokens = []
+            for token_lem in text_3_tokens:
+                if token_lem not in stop_words:
+                    text_4_tokens.append(token_lem)
+            if len(text_4_tokens) != 0:
+                text_tokens_list.append(text_4_tokens)
+            else:
+                text_tokens_list.append('-')
+        else:
+            text_tokens_list.append('-')
+    else: 
+        text_tokens_list.append('-')
+        
+col_names = ['Дата', 'Текст поста', 'Токены поста']
+wall_inf_df_1 = pd.DataFrame([date_list, text_list, text_tokens_list])
+wall_inf_df_1 = wall_inf_df_1.T
+wall_inf_df_1.columns = col_names
+wall_inf_df_1.to_excel('общий_массив_токеннизированной_информации.xlsx')
+
+#Частотная квантификация токенов (формирования мешка токенов): (1) объединение токенов в единый массив - (2) подсчет частоты встречаемости каждого токена
+all_tokens = []
+
+for tonens_list in text_tokens_list:
+    all_tokens.extend(tonens_list)
+    
+all_tokens_count = Counter (all_tokens)
+col_names = ['Частота встречаемости токена']
+wall_inf_df_2 = pd.DataFrame([dict(all_tokens_count)])
+wall_inf_df_2 = wall_inf_df_2.T
+wall_inf_df_2.columns = col_names
+wall_inf_df_2.to_excel('частотное_распределение_токенов_записей.xlsx')
+wall_inf_df_2
+
+#Описание изыскиваемых тематических компонент: (1) Определение источника концентрации тематической компоненты - (2) Парсинг информации из источника концентрации - (3) Токеннизация извлеченной информации - (4) Извлечение необходимого массива токенов на основе качественной обработки извлеченной информации
+inf_0 = requests.get('https://api.vk.com/method/wall.get', params = {'access_token' : '315c5932c4e6fe94cced7009dac83e5e9864fcb750264796470ce526863eb0fa164bab54b3ff767a68cf1', 'v' : 5.84, 'domain' : 'joise', 'count' : 1})
+
+posts_count = int(inf_0.json()['response']['count'])
+offset = 0
+all_posts_inf = []
+
+while offset < 9000:
+    inf_0 = requests.get('https://api.vk.com/method/wall.get', params = {'access_token' : '315c5932c4e6fe94cced7009dac83e5e9864fcb750264796470ce526863eb0fa164bab54b3ff767a68cf1',
+                                                                         'v' : 5.84,
+                                                                         'domain' : 'joise',
+                                                                         'count' : 100,
+                                                                         'offset' : offset
+                                                                        }
+                        )
+    inf_1 = inf_0.json()['response']['items']
+    all_posts_inf.extend(inf_1)
+    offset += 100
+
+target_text_list = []
+for post in all_posts_inf:
+    for k,v in post.items():
+        if k == 'text':
+            if v == '':
+                target_text_list.append('-')
+            else:
+                target_text_list.append(v)
+
+noun = ['S-PRO', 'NUM=n', 'S', 'NONLEX']
+verb = ['V']
+adj = ['ANUM=pl', 'ANUM=n', 'ANUM=m', 'NUM=comp', 'A=comp2', 'A=m', 'A-PRO=f', 'A-PRO=pl', 'A-PRO', 'A=comp', 'A=sg', 'ADV=comp', 'A', 'A=pl', 'A=f', 'PRAEDIC=comp', 'A=n', 'A-PRO=n', 'ANUM=f', 'ADV', 'NUM=f', 'NUM=m']
+rec = ['A-PRO=m', 'NUM=acc', 'NUM=ciph', 'NUM=ins', 'NUM', 'NUM=gen', 'S-PRO=dat', 'PR', 'INTJ', 'NUM=nom', 'ADV=comp2', 'S-PRO=ins', 'ADV-PRO', 'S-PRO=acc', 'PARENTH', 'PRAEDIC', 'PART', 'CONJ']
+
+lemmatizer = WordNetLemmatizer()
+stop_words = stopwords.words('russian')
+target_text_tokens_list = []
+for text in target_text_list:
+    if text != '-':
+        text_1 = re.sub(r'[^\w\s\d]', '', text)
+        text_2 = re.sub(r'\n', '', text_1)
+        if text_2.rstrip() != '':
+            text_2_tokens = word_tokenize(text_2.lower())
+            text_2_tokens_pos = nltk.pos_tag(text_2_tokens, lang = 'rus')
+            word, pos_tags = zip(*text_2_tokens_pos)
+            text_2_tokens_pos_dict = dict(zip(text_2_tokens, list(pos_tags)))
+            text_3_tokens = []
+            for k,v in text_2_tokens_pos_dict.items():
+                if v in noun:
+                    lem_token = lemmatizer.lemmatize(k, pos = 'n')
+                    text_3_tokens.append(lem_token)
+                elif v in verb:
+                    lem_token = lemmatizer.lemmatize(k, pos = 'v')
+                    text_3_tokens.append(lem_token)  
+                elif v in adj:
+                    lem_token = lemmatizer.lemmatize(k, pos = 'a')
+                    text_3_tokens.append(lem_token)
+                elif v in rec:
+                    lem_token = lemmatizer.lemmatize(k, pos = 'r')
+                    text_3_tokens.append(lem_token)
+            text_4_tokens = []
+            for token_lem in text_3_tokens:
+                if token_lem not in stop_words:
+                    text_4_tokens.append(token_lem)
+            if len(text_4_tokens) != 0:
+                target_text_tokens_list.extend(text_4_tokens)
+            else:
+                target_text_tokens_list.extend('-')
+        else:
+            target_text_tokens_list.extend('-')  
+    else:
+        target_text_tokens_list.extend('-')
+
+all_target_tokens_count = Counter (target_text_tokens_list)
+col_names = ['Частота встречаемости токена']
+target_wall_inf_df = pd.DataFrame([dict(all_target_tokens_count)])
+target_wall_inf_df = target_wall_inf_df.T
+target_wall_inf_df.columns = col_names
+target_wall_inf_df.to_excel('частотное_распределение_целевых_токенов_записей.xlsx')
+
+#Квантификация (вариант 1) - определение наличия содержательной компоненты в цельном массиве токенов: (1) - поиск пересечения между 2 глобальными массивами токенов, (2) - расчет доли встречаемости общих токенов
+tokens_set = pd.read_excel('частотное_распределение_токенов_записей.xlsx')
+token_set_tem_target = pd.read_excel('fin_частотное_распределение_целевых_токенов_записей.xlsx')
+crossing_tokens_list_0 = list(set(tokens_set['Unnamed: 0']) & set(token_set_tem_target['Unnamed: 0']))
+
+# Квантификатор 1 - длина списка общих токенов
+k_1 = len(crossing_tokens_list_0)
+
+# Квантификатор 2 - доля общих токенов в массиве токенов, описывающих потребителя
+k_2 = len(crossing_tokens_list_0) / len(list(tokens_set['Unnamed: 0']))
+
+# Квантификатор 3 - доля общих токенов в массиве токенов, описывающих тематическую компоненты
+k_3 = len(crossing_tokens_list_0) / len(list(token_set_tem_target['Unnamed: 0']))
+
+# Квантификатор 4 - число общих токенов, скорректирвоанное на удельный вес
+crossing_tokens_imp_list = []
+for token in crossing_tokens_list_0:
+    token_imp = float(token_set_tem_target[token_set_tem_target['Unnamed: 0'] == token].iloc[0]['Сглаженная частота встречаемости токенов'])
+    crossing_tokens_imp_list.append(token_imp)
+k_4 = sum(crossing_tokens_imp_list)
+
+# Квантификатор 5 - доля общих токенов в массиве токенов, описывающих потребителя, скорректированная на удельный вес
+crossing_tokens_imp_list = []
+for token in crossing_tokens_list_0:
+    token_imp = int(tokens_set[tokens_set['Unnamed: 0'] == token].iloc[0]['Частота встречаемости токена'])
+    crossing_tokens_imp_list.append(token_imp)
+k_5 = sum(crossing_tokens_imp_list) / sum(list(tokens_set['Частота встречаемости токена']))
+
+# Квантификатор 6 - доля общих токенов в массиве токенов, описывающих тематическую компоненты, скорректированная на удельный вес
+crossing_tokens_imp_list = []
+for token in crossing_tokens_list_0:
+    token_imp = float(token_set_tem_target[token_set_tem_target['Unnamed: 0'] == token].iloc[0]['Сглаженная частота встречаемости токенов'])
+    crossing_tokens_imp_list.append(token_imp)
+k_6 = sum(crossing_tokens_imp_list) / sum(list(token_set_tem_target['Сглаженная частота встречаемости токенов']))
+
+k_basic_df = pd.DataFrame([k_1, k_2, k_3, k_4, k_5, k_6])
+index_names = ['Длина списка общих токенов',
+             'Доля общих токенов в массиве токенов, описывающих потребителя',
+             'Доля общих токенов в массиве токенов, описывающих тематическую компоненты',
+             'Число общих токенов, скорректирвоанное на удельный вес',
+             'Доля общих токенов в массиве токенов, описывающих потребителя, скорректированная на удельный вес',
+             'Доля общих токенов в массиве токенов, описывающих тематическую компоненты, скорректированная на удельный вес'
+            ]
+k_basic_df = pd.DataFrame([k_1, k_2, k_3, k_4, k_5, k_6], columns = ['Значения квантификаторов'])
+k_basic_df.index = index_names
+
+#Квантификация (вариант 2) - определение наличия содержательной компоненты в отдельных записях: (1) - поиск пересечения между массивом тематических токенов и массивом токенов, образующих конкретную запись, (2) - квантификация массива общих токенов
+token_set_tem_target = pd.read_excel('fin_частотное_распределение_целевых_токенов_записей.xlsx')
+basic_dataframe = pd.read_excel('общий_массив_токеннизированной_информации.xlsx')
+
+list_of_crossing_tokens_lists = []
+list_of_tokens_lists = []
+for tokens_list in basic_dataframe['Токены поста']:
+    tokens_list_1 = re.sub("'|\s", "", tokens_list)
+    tokens_list_2 = re.split(',', tokens_list_1[1:-1])
+    list_of_tokens_lists.append(tokens_list_2)
+    crossing_tokens_list = list(set(tokens_list_2) & set(token_set_tem_target['Unnamed: 0']))
+    list_of_crossing_tokens_lists.append(crossing_tokens_list)
+    
+# Квантификатор 1 - длина списка общих токенов в записи
+k_1_list = []
+for crossing_tokens_list in list_of_crossing_tokens_lists:
+    k_1 = len(crossing_tokens_list)
+    k_1_list.append(k_1)
+
+# Квантификатор 2 - доля общих токенов в массиве токенов, описывающих запись
+k_2_list = []
+num_of_post = 0
+for crossing_tokens_list in list_of_crossing_tokens_lists:
+    k_2 = len(crossing_tokens_list) / len(list_of_tokens_lists[num_of_post])
+    k_2_list.append(k_2)
+    num_of_post += 1
+
+# Квантификатор 3 - доля общих токенов (описывающих запись) в массиве токенов, описывающих тематическую компоненты
+k_3_list = []
+num_of_post = 0
+for crossing_tokens_list in list_of_crossing_tokens_lists:
+    k_3 = len(crossing_tokens_list) / len(list(token_set_tem_target['Unnamed: 0']))
+    k_3_list.append(k_3)
+    num_of_post += 1
+
+# Квантификатор 4 - число общих токенов для записи, скорректирвоанное на удельный вес
+k_4_list = []
+list_of_crossing_tokens_imp_lists = []
+for crossing_tokens_list in list_of_crossing_tokens_lists:
+    crossing_tokens_imp_list = []
+    for token in crossing_tokens_list:
+        token_imp = float(token_set_tem_target[token_set_tem_target['Unnamed: 0'] == token].iloc[0]['Сглаженная частота встречаемости токенов'])
+        crossing_tokens_imp_list.append(token_imp)
+    list_of_crossing_tokens_imp_lists.append(crossing_tokens_imp_list)
+for tokens_imp_list in list_of_crossing_tokens_imp_lists:
+    k_4_list.append(sum(tokens_imp_list))
+    
+k_df = pd.DataFrame([k_1_list, k_2_list, k_3_list, k_4_list])
+
+col_names = ['Длина списка общих токенов в записи',
+             'Доля общих токенов в массиве токенов, описывающих запись',
+             'Доля общих токенов (описывающих запись) в массиве токенов, описывающих тематическую компоненты',
+             'Число общих токенов для записи, скорректирвоанное на удельный вес'
+            ]
+
+k_df = k_df.T
+
+k_df.columns = col_names
