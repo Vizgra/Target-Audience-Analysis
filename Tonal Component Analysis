@@ -1,0 +1,360 @@
+import requests
+import json
+import pandas as pd
+from datetime import datetime
+import time
+from dostoevsky.tokenization import RegexTokenizer
+from dostoevsky.models import FastTextSocialNetworkModel
+import numpy as np
+
+# Парсинг контента ВК: (1) записи со станы сообщества (2) комментарии к записям со стены сообщества
+
+inf_0 = requests.get('https://api.vk.com/method/wall.get', params = {'access_token' : '315c5932c4e6fe94cced7009dac83e5e9864fcb750264796470ce526863eb0fa164bab54b3ff767a68cf1', 'v' : 5.84, 'domain' : 'joise', 'count' : 1})
+
+posts_count = int(inf_0.json()['response']['count'])
+offset = 0
+all_posts_inf = []
+while offset < 1000:
+    inf_0 = requests.get('https://api.vk.com/method/wall.get', params = {'access_token' : '315c5932c4e6fe94cced7009dac83e5e9864fcb750264796470ce526863eb0fa164bab54b3ff767a68cf1',
+                                                                         'v' : 5.84,
+                                                                         'domain' : 'joise',
+                                                                         'count' : 100,
+                                                                         'offset' : offset
+                                                                        }
+                        )
+    inf_1 = inf_0.json()['response']['items']
+    all_posts_inf.extend(inf_1)
+    offset += 100
+
+id_list = []
+date_list = []
+text_list = []
+comments_count_list = []
+
+for post in all_posts_inf:
+    for k,v in post.items():
+        if k == 'date':
+            date_list.append(datetime.utcfromtimestamp(v).strftime('%d.%m.%Y'))
+        if k == 'text':
+            if v == '':
+                text_list.append('-')
+            else:
+                text_list.append(v)
+        if k == 'comments':
+            for k1,v1 in v.items():
+                if k1 == 'count':
+                    comments_count_list.append(v1)
+        if k == 'id':
+            id_list.append(v)
+            
+id_comment_dict = dict(zip(id_list, comments_count_list))
+comments_list = []
+
+for post_id,comments_count in id_comment_dict.items():
+    comment_inf_0 = requests.get('https://api.vk.com/method/wall.getComments', params = {'access_token' : '315c5932c4e6fe94cced7009dac83e5e9864fcb750264796470ce526863eb0fa164bab54b3ff767a68cf1',
+                                                                                         'v' : 5.84,
+                                                                                         'owner_id' : -38379225,
+                                                                                         'post_id' : post_id,
+                                                                                         'count' : comments_count
+                                                                                        }
+                                )
+    comment_inf_1 = comment_inf_0.json()['response']['items']
+    comments_post_list = []
+    for comment in comment_inf_1:
+        for k,v in comment.items():
+            if k == 'text':
+                if v == '':
+                    comments_post_list.append('-')
+                else:
+                    comments_post_list.append(v)
+    comments_list.append(comments_post_list)
+    time.sleep(1)
+    
+col_names = ['Дата', 'Текст поста', 'Комментарии']
+wall_inf_df = pd.DataFrame([date_list, text_list, comments_list])
+wall_inf_df = wall_inf_df.T
+wall_inf_df.columns = col_names
+wall_inf_df.to_excel('данные_со_стены_сообщества_для_оценки_тональности.xlsx')
+
+# Анализ тональности записей на стене сообщества-концентратора: (1) Оценка квантификаторов первого уровня (2) Расчет квантификаторов второго уровня (3) Расчет метаквантификаторов
+
+tokenizer = RegexTokenizer()
+model = FastTextSocialNetworkModel(tokenizer=tokenizer)
+negative_level_list = []
+positive_level_list = []
+neutral_level_list = []
+speech_level_list = []
+
+# Оценка квантификаторов первого уровня
+for post in wall_inf_df['Текст поста']:
+    if post != '-':
+        tonal_analis_list = model.predict([post])
+        for dictionary in tonal_analis_list:
+            for k,v in dictionary.items():
+                if k == 'neutral':
+                    neutral_level_list.append(v)
+                elif k == 'negative':
+                    negative_level_list.append(v)
+                elif k == 'positive':
+                    positive_level_list.append(v)
+                elif k == 'speech':
+                    speech_level_list.append(v)
+    else:
+        negative_level_list.append(0)
+        positive_level_list.append(0)
+        neutral_level_list.append(0)
+        speech_level_list.append(0)
+        
+                    
+# Оценка квантификаторов второго уровня
+tonal_disp_list = []
+counter = 0
+
+for positive_level in positive_level_list:
+    if negative_level_list[counter] != 0:
+        tonal_disp = positive_level / negative_level_list[counter]
+        tonal_disp_list.append(tonal_disp)
+        counter += 1
+    else:
+        tonal_disp_list.append(0)
+        counter += 1
+
+tonal_full_list = []
+counter = 0
+
+for neutral_level in neutral_level_list:
+    if neutral_level != 0:
+        tonal_full = (negative_level_list[counter] + positive_level_list[counter]) / neutral_level
+        tonal_full_list.append(tonal_full)
+        counter += 1
+    else:
+        tonal_full_list.append(0)
+        counter += 1
+        
+# Формирование датафрейма
+col_names = ['Уровень нейтрального окраса записи',
+             'Уровень негативного окраса записи',
+             'Уровень позитивного окраса записи',
+             'Уровень "разговорности" записи',
+             'Разрыв между позитивным и негативным окрасом контента',
+             'Общий уровень эмоциональности контента'
+            ]
+
+tonal_inf_df = pd.DataFrame([neutral_level_list,
+                             negative_level_list,
+                             positive_level_list,
+                             speech_level_list,
+                             tonal_disp_list,
+                             tonal_full_list
+                            ]
+                           )
+
+tonal_inf_df = tonal_inf_df.T
+tonal_inf_df.columns = col_names
+tonal_inf_df.to_excel('тональность_записей_со_стены.xlsx')
+        
+# Расчет матеквантификаторов
+negative_level_array = np.array(negative_level_list)
+positive_level_array = np.array(positive_level_list)
+neutral_level_array = np.array(neutral_level_list)
+speech_level_array = np.array(speech_level_list)
+tonal_disp_array = np.array(tonal_disp_list)
+tonal_full_array = np.array(tonal_full_list)
+
+negative_level_mean = np.mean(negative_level_array)
+positive_level_mean = np.mean(positive_level_array)
+neutral_level_mean = np.mean(neutral_level_array)
+speech_level_mean = np.mean(speech_level_array)
+tonal_disp_mean = np.mean(tonal_disp_array)
+tonal_full_mean = np.mean(tonal_full_array)
+
+negative_level_std = np.std(negative_level_array)
+positive_level_std = np.std(positive_level_array)
+neutral_level_std = np.std(neutral_level_array)
+speech_level_std = np.std(speech_level_array)
+tonal_disp_std = np.std(tonal_disp_array)
+tonal_full_std = np.std(tonal_full_array)
+
+# Формирование датафрейма матеквантификаторов
+meta_tonal_inf_df = pd.DataFrame([negative_level_mean,
+                                  positive_level_mean,
+                                  neutral_level_mean,
+                                  speech_level_mean,
+                                  tonal_disp_mean,
+                                  tonal_full_mean,
+                                  negative_level_std,
+                                  positive_level_std,
+                                  neutral_level_std,
+                                  speech_level_std,
+                                  tonal_disp_std,
+                                  tonal_full_std
+                                 ],
+                                 columns = ['Значения метаквантификаторов']
+                                )
+
+index_names = ['Средний уровень негативного окраса записи',
+               'Средний уровень позитивного окраса записи',
+               'Средний уровень нейтрального окраса записи',
+               'Средний уровень "разговорности" записи',
+               'Средний уровень разрыва между позитивным и негативным окрасом записи',
+               'Средний уровень общей эмоциональности записи',
+               'Стандартное отклонение негативного окраса записи',
+               'Стандартное отклонение позитивного окраса записи',
+               'Стандартное отклонение нейтрального окраса записи',
+               'Стандартное отклонение "разговорности" записи',
+               'Стандартное отклонение разрыва между позитивным и негативным окрасом записи',
+               'Стандартное отклонение общей эмоциональности записи'
+              ]
+
+meta_tonal_inf_df.index = index_names
+meta_tonal_inf_df.to_excel('метоквантификатороы_тональности_записей_со_стены.xlsx')
+
+# Анализ тональности комментариев
+
+
+tokenizer = RegexTokenizer()
+model = FastTextSocialNetworkModel(tokenizer=tokenizer)
+
+negative_level_comments_list = []
+positive_level_comments_list = []
+neutral_level_comments_list = []
+speech_level_comments_list = []
+
+# Оценка квантификаторов первого уровня
+for comments_list in wall_inf_df['Комментарии']:
+    negative_level_comments_list_1 = []
+    positive_level_comments_list_1 = []
+    neutral_level_comments_list_1 = []
+    speech_level_comments_list_1 = []
+    for comment in comments_list:
+            tonal_analis_comment = model.predict([comment])
+            for dictionary in tonal_analis_comment:
+                for k,v in dictionary.items():
+                    if k == 'neutral':
+                        neutral_level_comments_list_1.append(v)
+                    elif k == 'negative':
+                        negative_level_comments_list_1.append(v)
+                    elif k == 'positive':
+                        positive_level_comments_list_1.append(v)
+                    elif k == 'speech':
+                        speech_level_comments_list_1.append(v)
+    if len(negative_level_comments_list_1) != 0:
+        negative_level_comments_list.append(sum(negative_level_comments_list_1) / len(negative_level_comments_list_1))
+    else:
+        negative_level_comments_list.append(0)
+    if len(positive_level_comments_list_1) != 0:
+        positive_level_comments_list.append(sum(positive_level_comments_list_1) / len(positive_level_comments_list_1))
+    else:
+        positive_level_comments_list.append(0)
+    if len(neutral_level_comments_list_1) != 0:
+        neutral_level_comments_list.append(sum(neutral_level_comments_list_1) / len(neutral_level_comments_list_1))
+    else:
+        neutral_level_comments_list.append(0)
+    if len(speech_level_comments_list_1) != 0:
+        speech_level_comments_list.append(sum(speech_level_comments_list_1) / len(speech_level_comments_list_1))
+    else:
+        speech_level_comments_list.append(0)
+        
+        
+# Оценка квантификаторов второго уровня
+tonal_disp_comments_list = []
+counter = 0
+
+for positive_level in positive_level_comments_list:
+    if negative_level_comments_list[counter] != 0:
+        tonal_disp = positive_level / negative_level_comments_list[counter]
+        tonal_disp_comments_list.append(tonal_disp)
+        counter += 1
+    else:
+        tonal_disp_comments_list.append(0)
+        counter += 1
+
+tonal_full_comments_list = []
+counter = 0
+
+for neutral_level in neutral_level_comments_list:
+    if neutral_level != 0:
+        tonal_full = (negative_level_comments_list[counter] + positive_level_comments_list[counter]) / neutral_level
+        tonal_full_comments_list.append(tonal_full)
+        counter += 1
+    else:
+        tonal_full_comments_list.append(0)
+        counter += 1
+        
+# Формирование датафрейма
+col_names = ['Уровень нейтрального окраса комментариев',
+             'Уровень негативного окраса комментариев',
+             'Уровень позитивного окраса комментариев',
+             'Уровень "разговорности" комментариев',
+             'Разрыв между позитивным и негативным окрасом комментариев',
+             'Общий уровень эмоциональности комментариев'
+            ]
+
+tonal_comments_inf_df = pd.DataFrame([neutral_level_comments_list,
+                                      negative_level_comments_list,
+                                      positive_level_comments_list,
+                                      speech_level_comments_list,
+                                      tonal_disp_comments_list,
+                                      tonal_full_comments_list
+                                     ]
+                                    )
+
+tonal_comments_inf_df = tonal_comments_inf_df.T
+tonal_comments_inf_df.columns = col_names
+tonal_comments_inf_df.to_excel('тональность_комментариев_к_записям_со_стены.xlsx')
+
+# Расчет матеквантификаторов
+negative_level_comments_array = np.array(negative_level_comments_list)
+positive_level_comments_array = np.array(positive_level_comments_list)
+neutral_level_comments_array = np.array(neutral_level_comments_list)
+speech_level_comments_array = np.array(speech_level_comments_list)
+tonal_disp_comments_array = np.array(tonal_disp_comments_list)
+tonal_full_comments_array = np.array(tonal_full_comments_list)
+
+negative_level_comments_mean = np.mean(negative_level_comments_array)
+positive_level_comments_mean = np.mean(positive_level_comments_array)
+neutral_level_comments_mean = np.mean(neutral_level_comments_array)
+speech_level_comments_mean = np.mean(speech_level_comments_array)
+tonal_disp_comments_mean = np.mean(tonal_disp_comments_array)
+tonal_full_comments_mean = np.mean(tonal_full_comments_array)
+
+negative_level_comments_std = np.std(negative_level_comments_array)
+positive_level_comments_std = np.std(positive_level_comments_array)
+neutral_level_comments_std = np.std(neutral_level_comments_array)
+speech_level_comments_std = np.std(speech_level_comments_array)
+tonal_disp_comments_std = np.std(tonal_disp_comments_array)
+tonal_full_comments_std = np.std(tonal_full_comments_array)
+
+# Формирование датафрейма матеквантификаторов
+meta_tonal_comments_inf_df = pd.DataFrame([negative_level_comments_mean,
+                                  positive_level_comments_mean,
+                                  neutral_level_comments_mean,
+                                  speech_level_comments_mean,
+                                  tonal_disp_comments_mean,
+                                  tonal_full_comments_mean,
+                                  negative_level_comments_std,
+                                  positive_level_comments_std,
+                                  neutral_level_comments_std,
+                                  speech_level_comments_std,
+                                  tonal_disp_comments_std,
+                                  tonal_full_comments_std
+                                 ],
+                                 columns = ['Значения метаквантификаторов']
+                                )
+
+index_names = ['Средний уровень негативного окраса комментариев',
+               'Средний уровень позитивного окраса комментариев',
+               'Средний уровень нейтрального окраса комментариев',
+               'Средний уровень "разговорности" комментариев',
+               'Средний уровень разрыва между позитивным и негативным окрасом комментариев',
+               'Средний уровень общей эмоциональности комментариев',
+               'Стандартное отклонение негативного окраса комментариев',
+               'Стандартное отклонение позитивного окраса комментариев',
+               'Стандартное отклонение нейтрального окраса комментариев',
+               'Стандартное отклонение "разговорности" комментариев',
+               'Стандартное отклонение разрыва между позитивным и негативным окрасом комментариев',
+               'Стандартное отклонение общей эмоциональности комментариев'
+              ]
+
+meta_tonal_comments_inf_df.index = index_names
+meta_tonal_comments_inf_df.to_excel('метоквантификатороы_тональности_комментариев_к_записям_со_стены.xlsx')
