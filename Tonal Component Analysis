@@ -15,7 +15,7 @@ posts_count = int(inf_0.json()['response']['count'])
 offset = 0
 all_posts_inf = []
 while offset < 1000:
-    inf_0 = requests.get('https://api.vk.com/method/wall.get', params = {'access_token' : '315c5932c4e6fe94cced7009dac83e5e9864fcb750264796470ce526863eb0fa164bab54b3ff767a68cf1',
+    inf_0 = requests.get('https://api.vk.com/method/wall.get', params = {'access_token' : 'сюда вставить токен',
                                                                          'v' : 5.84,
                                                                          'domain' : 'joise',
                                                                          'count' : 100,
