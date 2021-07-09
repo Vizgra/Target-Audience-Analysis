@@ -51,7 +51,7 @@ id_comment_dict = dict(zip(id_list, comments_count_list))
 comments_list = []
 
 for post_id,comments_count in id_comment_dict.items():
-    comment_inf_0 = requests.get('https://api.vk.com/method/wall.getComments', params = {'access_token' : '315c5932c4e6fe94cced7009dac83e5e9864fcb750264796470ce526863eb0fa164bab54b3ff767a68cf1',
+    comment_inf_0 = requests.get('https://api.vk.com/method/wall.getComments', params = {'access_token' : 'сюда вставить токен',
                                                                                          'v' : 5.84,
                                                                                          'owner_id' : -38379225,
                                                                                          'post_id' : post_id,
